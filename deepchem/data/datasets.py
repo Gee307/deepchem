@@ -1864,7 +1864,7 @@ class DiskDataset(Dataset):
                 for shard_num, row in self.metadata_df.iterrows():
                     logger.info("Transforming shard %d/%d" %
                                 (shard_num, n_shards))
-                    X, y, w, ids = self.get_shard(shard_num)
+                    X, y, w, ids = self._load_shard_selective(shard_num, transformer)
                     newx, newy, neww, newids = transformer.transform_array(
                         X, y, w, ids)
                     yield (newx, newy, neww, newids)
@@ -1882,10 +1882,18 @@ class DiskDataset(Dataset):
                          out_dir: str,
                          tasks: np.ndarray) -> List[Optional[str]]:
         """This is called by transform() to transform a single shard."""
-        X = None if X_file is None else np.array(load_from_disk(X_file))
-        y = None if y_file is None else np.array(load_from_disk(y_file))
-        w = None if w_file is None else np.array(load_from_disk(w_file))
-        ids = np.array(load_from_disk(ids_file))
+        X = (np.array(load_from_disk(X_file))
+            if transformer.transform_X and X_file is not None else None)
+
+        y = (np.array(load_from_disk(y_file))
+            if transformer.transform_y and y_file is not None else None)
+
+        w = (np.array(load_from_disk(w_file))
+            if transformer.transform_w and w_file is not None else None)
+
+        ids = (np.array(load_from_disk(ids_file), dtype=object)
+            if transformer.transform_ids and ids_file is not None else None)
+
         X, y, w, ids = transformer.transform_array(X, y, w, ids)
         basename = "shard-%d" % shard_num
         return DiskDataset.write_data_to_disk(out_dir, basename, X, y, w, ids)
@@ -2268,6 +2276,41 @@ class DiskDataset(Dataset):
             self._cached_shards[i] = shard
             self._cache_used += shard_size
         return (shard.X, shard.y, shard.w, shard.ids)
+
+
+    def _load_shard_selective(self, shard_num: int,
+                          transformer: "dc.trans.Transformer") -> Batch:
+        """
+           Load only the shard components required by the transformer.
+           NOTE :
+           DiskDataset.transform() previously loaded full shards unconditionally.
+           This helper avoids unnecessary I/O by loading only the components
+           required by the Transformer (using existing transform_* flags).
+        """
+        row = self.metadata_df.iloc[shard_num]
+
+        X = (
+            np.array(load_from_disk(os.path.join(self.data_dir, row['X'])))
+            if transformer.transform_X and row['X'] is not None else None
+        )
+
+        y = (
+            np.array(load_from_disk(os.path.join(self.data_dir, row['y'])))
+            if transformer.transform_y and row['y'] is not None else None
+        )
+
+        w = (
+            np.array(load_from_disk(os.path.join(self.data_dir, row['w'])))
+            if transformer.transform_w and row['w'] is not None else None
+        )
+
+        ids = (
+            np.array(load_from_disk(os.path.join(self.data_dir, row['ids'])),
+                    dtype=object)
+            if transformer.transform_ids and row['ids'] is not None else None
+        )
+
+        return X, y, w, ids
 
     def get_shard_ids(self, i: int) -> np.ndarray:
         """Retrieves the list of IDs for the i-th shard from disk.
